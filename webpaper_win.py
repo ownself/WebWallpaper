@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Windows version of WebPaper - Display web content as desktop background
-Based on webpaper.py but adapted for Windows platform using pywebview and Windows API
+WebPaper - Display web content as desktop background on Windows
+Simplified approach focusing on basic functionality
 """
 
 import os
@@ -9,12 +9,22 @@ import sys
 import threading
 import http.server
 import socketserver
-import webbrowser
 import webview
 import win32gui
 import win32con
 import argparse
 from urllib.parse import urlparse
+import time
+import ctypes
+
+# Enable high DPI awareness
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
+except:
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except:
+        pass
 
 # Simple HTTP server class (same as Linux version)
 class SimpleHTTPServer:
@@ -54,106 +64,151 @@ class SimpleHTTPServer:
 
 # Get screen dimensions
 def get_screen_size():
-    import tkinter
-    root = tkinter.Tk()
-    width = root.winfo_screenwidth()
-    height = root.winfo_screenheight()
-    root.destroy()
-    return width, height
-
-# Set window as desktop background
-def set_as_desktop_background(hwnd):
-    # Set window to be always on bottom
-    win32gui.SetWindowPos(hwnd, win32con.HWND_BOTTOM, 0, 0, 0, 0,
-                         win32con.SWP_NOSIZE | win32con.SWP_NOMOVE | win32con.SWP_NOACTIVATE)
-    
-    # Additional styles to make it behave like desktop background
-    ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
-    win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, 
-                          ex_style | win32con.WS_EX_NOACTIVATE | win32con.WS_EX_TRANSPARENT)
-    
-    # Try to position behind desktop icons
     try:
-        progman = win32gui.FindWindow("Progman", None)
-        win32gui.SetParent(hwnd, progman)
+        user32 = ctypes.windll.user32
+        width = user32.GetSystemMetrics(0)
+        height = user32.GetSystemMetrics(1)
+        return width, height
     except:
-        pass
+        import tkinter
+        root = tkinter.Tk()
+        width = root.winfo_screenwidth()
+        height = root.winfo_screenheight()
+        root.destroy()
+        return width, height
 
 # Window create event handler
 def on_window_create(window):
-    # Get window handle
-    hwnd = window._hwnd  # Get the window handle correctly
-    if hwnd:
-        set_as_desktop_background(hwnd)
+    print("Window created, starting background setup")
+    
+    # Start a thread to handle window setup after a delay
+    def setup_window():
+        time.sleep(1.0)  # Give the window more time to fully initialize
+        
+        # Try to find our window by its title
+        hwnd = None
+        for _ in range(20):  # Try for 2 seconds
+            hwnd = win32gui.FindWindow(None, "WebPaper")
+            if hwnd:
+                break
+            time.sleep(0.1)
+        
+        if hwnd:
+            print(f"Found window handle: {hwnd}")
+            
+            # Get screen dimensions
+            width, height = get_screen_size()
+            print(f"Screen size: {width}x{height}")
+            
+            # Set window styles to make it behave like a wallpaper
+            try:
+                # Set window style to popup (no title bar, no border)
+                win32gui.SetWindowLong(hwnd, win32con.GWL_STYLE, win32con.WS_POPUP)
+                
+                # Set extended styles
+                ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+                # WS_EX_TOOLWINDOW - prevents it from appearing in taskbar
+                # WS_EX_NOACTIVATE - prevents it from being activated
+                # WS_EX_TRANSPARENT - makes it transparent to mouse events
+                # WS_EX_LAYERED - for better transparency handling
+                win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, 
+                                      ex_style | win32con.WS_EX_NOACTIVATE | win32con.WS_EX_TOOLWINDOW | win32con.WS_EX_TRANSPARENT)
+                
+                # Remove WS_EX_APPWINDOW which would cause it to appear in taskbar
+                ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+                win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, ex_style & ~win32con.WS_EX_APPWINDOW)
+                
+                # Position window to cover entire screen
+                win32gui.SetWindowPos(hwnd, win32con.HWND_BOTTOM, 0, 0, width, height,
+                                     win32con.SWP_NOACTIVATE | win32con.SWP_SHOWWINDOW)
+                
+                print("Window configured as wallpaper")
+                
+                # Keep it at the bottom periodically
+                def keep_wallpaper():
+                    while True:
+                        try:
+                            # Ensure it stays at the bottom and doesn't appear in taskbar
+                            win32gui.SetWindowPos(hwnd, win32con.HWND_BOTTOM, 0, 0, width, height,
+                                                 win32con.SWP_NOACTIVATE | win32con.SWP_SHOWWINDOW)
+                            # Re-apply styles periodically to ensure they're maintained
+                            ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+                            win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, 
+                                                  ex_style | win32con.WS_EX_NOACTIVATE | win32con.WS_EX_TOOLWINDOW | win32con.WS_EX_TRANSPARENT)
+                            ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+                            win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, ex_style & ~win32con.WS_EX_APPWINDOW)
+                            time.sleep(1.0)
+                        except:
+                            break
+                
+                # Start background thread to maintain position
+                wallpaper_thread = threading.Thread(target=keep_wallpaper, daemon=True)
+                wallpaper_thread.start()
+                
+            except Exception as e:
+                print(f"Error configuring window: {e}")
+        else:
+            print("Could not get window handle")
+    
+    setup_thread = threading.Thread(target=setup_window, daemon=True)
+    setup_thread.start()
 
 # Main function
 def main():
-    # Parse command line arguments
     parser = argparse.ArgumentParser(description='WebPaper - A web-based wallpaper tool for Windows')
     parser.add_argument('url_or_path', nargs='?', default="http://localhost:8080", help='URL or file path to load')
     parser.add_argument('--clear-cache', action='store_true', help='Clear browser cache before loading')
     args = parser.parse_args()
     
-    # Get URL or file path to load
     url_or_path = args.url_or_path
     clear_cache = args.clear_cache
 
     # Check if it's a local file path or URL
     server = None
     if os.path.exists(url_or_path):
-        # It's a local file path
         if os.path.isfile(url_or_path):
-            # If it's a file, get its directory
             directory = os.path.dirname(os.path.abspath(url_or_path))
             filename = os.path.basename(url_or_path)
         else:
-            # If it's a directory, use directly
             directory = os.path.abspath(url_or_path)
             filename = ""
         
-        # Start local server
         server = SimpleHTTPServer(directory)
         server.start()
         
-        # Construct URL
         if filename:
             uri = f"http://localhost:8080/{filename}"
         else:
             uri = f"http://localhost:8080/"
     else:
-        # It's a URL, use directly
         uri = url_or_path
 
     print(f"Loading: {uri}")
     
-    # Get screen dimensions
     width, height = get_screen_size()
     
     # Create webview window
     window = webview.create_window(
-        'WebPaper', 
+        'WebPaper',
         uri,
         width=width,
         height=height,
         resizable=False,
         frameless=True,
-        on_top=False  # We'll position it properly using Windows API
+        on_top=False,
+        transparent=False  # Disable transparency for better compatibility
     )
     
-    # Clear cache if requested
     if clear_cache:
-        # Clear cache using webview's built-in method if available
         try:
             window.clear_cache()
             print("Cache cleared")
         except AttributeError:
-            # If clear_cache method is not available, try alternative approach
             print("Cache clearing not supported in this version of pywebview")
     
-    # Start webview with custom create handler
-    webview.start(on_window_create, window)
+    # Start webview
+    webview.start(on_window_create, window, gui='edgechromium')
     
-    # Stop server if it was started
     if server:
         server.stop()
 
