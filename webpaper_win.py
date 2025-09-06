@@ -105,18 +105,27 @@ def on_window_create(window):
                 # Set window style to popup (no title bar, no border)
                 win32gui.SetWindowLong(hwnd, win32con.GWL_STYLE, win32con.WS_POPUP)
                 
-                # Set extended styles
-                ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+                # Set extended styles for wallpaper behavior
                 # WS_EX_TOOLWINDOW - prevents it from appearing in taskbar
                 # WS_EX_NOACTIVATE - prevents it from being activated
-                # WS_EX_TRANSPARENT - makes it transparent to mouse events
-                # WS_EX_LAYERED - for better transparency handling
-                win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, 
-                                      ex_style | win32con.WS_EX_NOACTIVATE | win32con.WS_EX_TOOLWINDOW | win32con.WS_EX_TRANSPARENT)
+                # WS_EX_TRANSPARENT - makes it transparent to mouse events (key for fixing drag response)
+                # WS_EX_LAYERED - required for transparency and proper mouse event handling
+                new_ex_style = (win32con.WS_EX_NOACTIVATE | 
+                              win32con.WS_EX_TOOLWINDOW | 
+                              win32con.WS_EX_TRANSPARENT | 
+                              win32con.WS_EX_LAYERED)
                 
-                # Remove WS_EX_APPWINDOW which would cause it to appear in taskbar
+                # Remove WS_EX_APPWINDOW to prevent taskbar appearance
                 ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
-                win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, ex_style & ~win32con.WS_EX_APPWINDOW)
+                ex_style = (ex_style & ~win32con.WS_EX_APPWINDOW) | new_ex_style
+                win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, ex_style)
+                
+                # Configure layered window attributes for proper mouse transparency
+                try:
+                    # LWA_ALPHA = 0x2, make window 99% opaque but with proper mouse transparency
+                    ctypes.windll.user32.SetLayeredWindowAttributes(hwnd, 0, 252, 0x2)
+                except Exception as layer_err:
+                    print(f"Warning: Could not set layered window attributes: {layer_err}")
                 
                 # Position window to cover entire screen
                 win32gui.SetWindowPos(hwnd, win32con.HWND_BOTTOM, 0, 0, width, height,
@@ -132,11 +141,19 @@ def on_window_create(window):
                             win32gui.SetWindowPos(hwnd, win32con.HWND_BOTTOM, 0, 0, width, height,
                                                  win32con.SWP_NOACTIVATE | win32con.SWP_SHOWWINDOW)
                             # Re-apply styles periodically to ensure they're maintained
+                            new_ex_style = (win32con.WS_EX_NOACTIVATE | 
+                                          win32con.WS_EX_TOOLWINDOW | 
+                                          win32con.WS_EX_TRANSPARENT | 
+                                          win32con.WS_EX_LAYERED)
                             ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
-                            win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, 
-                                                  ex_style | win32con.WS_EX_NOACTIVATE | win32con.WS_EX_TOOLWINDOW | win32con.WS_EX_TRANSPARENT)
-                            ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
-                            win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, ex_style & ~win32con.WS_EX_APPWINDOW)
+                            ex_style = (ex_style & ~win32con.WS_EX_APPWINDOW) | new_ex_style
+                            win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, ex_style)
+                            
+                            # Maintain layered window attributes
+                            try:
+                                ctypes.windll.user32.SetLayeredWindowAttributes(hwnd, 0, 252, 0x2)
+                            except:
+                                pass
                             time.sleep(1.0)
                         except:
                             break
