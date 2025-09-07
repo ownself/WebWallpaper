@@ -7,8 +7,6 @@ Simplified approach focusing on basic functionality
 import os
 import sys
 import threading
-import http.server
-import socketserver
 import webview
 import win32gui
 import win32con
@@ -108,29 +106,128 @@ def create_system_tray():
     # Run the tray icon (this blocks)
     tray_icon.run()
 
-# Simple HTTP server class (same as Linux version)
-class SimpleHTTPServer:
+# Stable HTTP server using werkzeug
+class StableHTTPServer:
     def __init__(self, directory, port=8080):
         self.directory = directory
         self.port = port
-        self.httpd = None
+        self.server = None
         self.server_thread = None
         
+    def create_app(self):
+        """Create WSGI application for serving static files"""
+        def application(environ, start_response):
+            from werkzeug.wrappers import Request, Response
+            from werkzeug.exceptions import NotFound, HTTPException
+            import mimetypes
+            import pathlib
+            
+            request = Request(environ)
+            
+            try:
+                # Get the requested path
+                path = request.path.lstrip('/')
+                if not path:
+                    path = 'index.html'
+                
+                # Security check: prevent directory traversal
+                file_path = os.path.join(self.directory, path)
+                file_path = os.path.abspath(file_path)
+                
+                if not file_path.startswith(os.path.abspath(self.directory)):
+                    raise NotFound()
+                
+                # Check if file exists
+                if not os.path.exists(file_path):
+                    raise NotFound()
+                
+                # Read file
+                with open(file_path, 'rb') as f:
+                    content = f.read()
+                
+                # Guess content type
+                content_type, _ = mimetypes.guess_type(file_path)
+                if content_type is None:
+                    content_type = 'application/octet-stream'
+                
+                # Create response with no-cache headers
+                response = Response(
+                    content,
+                    mimetype=content_type,
+                    headers={
+                        'Cache-Control': 'no-cache, no-store, must-revalidate',
+                        'Pragma': 'no-cache',
+                        'Expires': '0'
+                    }
+                )
+                
+                return response(environ, start_response)
+                
+            except HTTPException as e:
+                return e(environ, start_response)
+            except Exception as e:
+                # Return 500 error for unexpected exceptions
+                response = Response(f'Internal Server Error: {str(e)}', status=500)
+                return response(environ, start_response)
+        
+        return application
+        
     def start(self):
-        # Change to specified directory
+        try:
+            from werkzeug.serving import make_server
+            print("Using Werkzeug HTTP server")
+            
+            app = self.create_app()
+            self.server = make_server('localhost', self.port, app, threaded=True)
+            
+            # Start server in new thread
+            self.server_thread = threading.Thread(target=self.server.serve_forever)
+            self.server_thread.daemon = True
+            self.server_thread.start()
+            
+            print(f"Local server started at http://localhost:{self.port}")
+            
+        except ImportError:
+            # Fallback to basic Python server if werkzeug is not available
+            print("Werkzeug not available, using basic Python server with error handling")
+            self._start_python_server()
+    
+    def _start_python_server(self):
+        """Fallback Python server with improved error handling"""
+        import http.server
+        import socketserver
+        
         os.chdir(self.directory)
         
-        # Create HTTP request handler with cache disabled
-        class NoCacheHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
+        # Create HTTP request handler with cache disabled and better error handling
+        class ImprovedHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             def end_headers(self):
                 # Add headers to disable caching
                 self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
                 self.send_header('Pragma', 'no-cache')
                 self.send_header('Expires', '0')
                 super().end_headers()
+            
+            def copyfile(self, source, outputfile):
+                """Copy file with proper error handling for client disconnections"""
+                try:
+                    super().copyfile(source, outputfile)
+                except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+                    # Client disconnected - this is normal, don't log as error
+                    pass
+                except Exception as e:
+                    # Log other unexpected errors
+                    print(f"Unexpected error during file transfer: {e}")
+            
+            def log_error(self, format, *args):
+                # Suppress connection reset errors in logs
+                msg = format % args
+                if "ConnectionResetError" in msg or "WinError 10054" in msg:
+                    return
+                super().log_error(format, *args)
         
         # Create socket server
-        self.httpd = socketserver.TCPServer(("", self.port), NoCacheHTTPRequestHandler)
+        self.httpd = socketserver.TCPServer(("", self.port), ImprovedHTTPRequestHandler)
         
         # Start server in new thread
         self.server_thread = threading.Thread(target=self.httpd.serve_forever)
@@ -140,7 +237,9 @@ class SimpleHTTPServer:
         print(f"Local server started at http://localhost:{self.port}")
         
     def stop(self):
-        if self.httpd:
+        if hasattr(self, 'server') and self.server:
+            self.server.shutdown()
+        elif hasattr(self, 'httpd') and self.httpd:
             self.httpd.shutdown()
             self.httpd.server_close()
 
@@ -274,7 +373,7 @@ def main():
             directory = os.path.abspath(url_or_path)
             filename = ""
         
-        server_instance = SimpleHTTPServer(directory)
+        server_instance = StableHTTPServer(directory)
         server_instance.start()
         
         if filename:
