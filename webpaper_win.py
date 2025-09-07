@@ -16,6 +16,8 @@ import argparse
 from urllib.parse import urlparse
 import time
 import ctypes
+import pystray
+from PIL import Image, ImageDraw
 
 # Enable high DPI awareness
 try:
@@ -25,6 +27,86 @@ except:
         ctypes.windll.user32.SetProcessDPIAware()
     except:
         pass
+
+# Global variables for application management
+tray_icon = None
+server_instance = None
+webview_window = None
+app_running = True
+
+# Create a simple icon for the system tray
+def create_tray_icon():
+    """Create a simple icon image for the system tray"""
+    # Create a 64x64 image with a simple design
+    image = Image.new('RGB', (64, 64), color='blue')
+    draw = ImageDraw.Draw(image)
+    
+    # Draw a simple "W" for WebPaper
+    draw.text((20, 20), "W", fill='white', anchor="mm")
+    
+    return image
+
+# Tray menu actions
+def quit_webpaper(icon, item):
+    """Quit the application - immediate force exit"""
+    print("Force quitting WebPaper...")
+    
+    # Stop tray icon immediately to prevent multiple clicks
+    if icon:
+        try:
+            icon.stop()
+        except:
+            pass
+    
+    # Immediate force termination - no cleanup delays
+    def immediate_exit():
+        import ctypes
+        import subprocess
+        
+        try:
+            # Method 1: Use Windows taskkill to terminate current process
+            current_pid = os.getpid()
+            subprocess.run(['taskkill', '/F', '/PID', str(current_pid)], 
+                          creationflags=subprocess.CREATE_NO_WINDOW)
+        except:
+            try:
+                # Method 2: Direct Windows API call
+                import ctypes.wintypes
+                kernel32 = ctypes.windll.kernel32
+                handle = kernel32.GetCurrentProcess()
+                kernel32.TerminateProcess(handle, 0)
+            except:
+                # Method 3: Python exit
+                os._exit(0)
+    
+    # Execute immediately - no threading delay
+    immediate_exit()
+
+def show_about(icon, item):
+    """Show about information"""
+    print("WebPaper - Web-based wallpaper tool for Windows")
+
+# Create system tray
+def create_system_tray():
+    """Create and run the system tray icon"""
+    global tray_icon
+    
+    # Create menu items
+    menu = pystray.Menu(
+        pystray.MenuItem("About", show_about),
+        pystray.MenuItem("Quit", quit_webpaper)
+    )
+    
+    # Create the tray icon
+    tray_icon = pystray.Icon(
+        "WebPaper",
+        create_tray_icon(),
+        "WebPaper - Web Wallpaper",
+        menu
+    )
+    
+    # Run the tray icon (this blocks)
+    tray_icon.run()
 
 # Simple HTTP server class (same as Linux version)
 class SimpleHTTPServer:
@@ -170,8 +252,11 @@ def on_window_create(window):
     setup_thread = threading.Thread(target=setup_window, daemon=True)
     setup_thread.start()
 
+
 # Main function
 def main():
+    global server_instance, webview_window
+    
     parser = argparse.ArgumentParser(description='WebPaper - A web-based wallpaper tool for Windows')
     parser.add_argument('url_or_path', nargs='?', default="http://localhost:8080", help='URL or file path to load')
     parser.add_argument('--clear-cache', action='store_true', help='Clear browser cache before loading')
@@ -181,7 +266,6 @@ def main():
     clear_cache = args.clear_cache
 
     # Check if it's a local file path or URL
-    server = None
     if os.path.exists(url_or_path):
         if os.path.isfile(url_or_path):
             directory = os.path.dirname(os.path.abspath(url_or_path))
@@ -190,8 +274,8 @@ def main():
             directory = os.path.abspath(url_or_path)
             filename = ""
         
-        server = SimpleHTTPServer(directory)
-        server.start()
+        server_instance = SimpleHTTPServer(directory)
+        server_instance.start()
         
         if filename:
             uri = f"http://localhost:8080/{filename}"
@@ -204,8 +288,14 @@ def main():
     
     width, height = get_screen_size()
     
-    # Create webview window
-    window = webview.create_window(
+    # Start system tray in a separate thread
+    tray_thread = threading.Thread(target=create_system_tray, daemon=True)
+    tray_thread.start()
+    print("System tray icon created. Right-click the icon to quit.")
+    print("Press Ctrl+C in this terminal to also quit.")
+    
+    # Create webview window in MAIN thread (required by webview)
+    webview_window = webview.create_window(
         'WebPaper',
         uri,
         width=width,
@@ -213,21 +303,26 @@ def main():
         resizable=False,
         frameless=True,
         on_top=False,
-        transparent=False  # Disable transparency for better compatibility
+        transparent=False
     )
     
     if clear_cache:
         try:
-            window.clear_cache()
+            webview_window.clear_cache()
             print("Cache cleared")
         except AttributeError:
             print("Cache clearing not supported in this version of pywebview")
     
-    # Start webview
-    webview.start(on_window_create, window, gui='edgechromium')
-    
-    if server:
-        server.stop()
+    try:
+        # Start webview in main thread (this will block until window is closed)
+        webview.start(on_window_create, webview_window, gui='edgechromium')
+    except KeyboardInterrupt:
+        print("\nReceived Ctrl+C, shutting down...")
+    finally:
+        # Cleanup when webview exits
+        if server_instance:
+            server_instance.stop()
+        print("Application terminated")
 
 if __name__ == "__main__":
     main()
