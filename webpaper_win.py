@@ -312,36 +312,7 @@ def on_window_create(window):
                 win32gui.SetWindowPos(hwnd, win32con.HWND_BOTTOM, 0, 0, width, height,
                                      win32con.SWP_NOACTIVATE | win32con.SWP_SHOWWINDOW)
                 
-                print("Window configured as wallpaper")
-                
-                # Keep it at the bottom periodically
-                def keep_wallpaper():
-                    while True:
-                        try:
-                            # Ensure it stays at the bottom and doesn't appear in taskbar
-                            win32gui.SetWindowPos(hwnd, win32con.HWND_BOTTOM, 0, 0, width, height,
-                                                 win32con.SWP_NOACTIVATE | win32con.SWP_SHOWWINDOW)
-                            # Re-apply styles periodically to ensure they're maintained
-                            new_ex_style = (win32con.WS_EX_NOACTIVATE | 
-                                          win32con.WS_EX_TOOLWINDOW | 
-                                          win32con.WS_EX_TRANSPARENT | 
-                                          win32con.WS_EX_LAYERED)
-                            ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
-                            ex_style = (ex_style & ~win32con.WS_EX_APPWINDOW) | new_ex_style
-                            win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, ex_style)
-                            
-                            # Maintain layered window attributes
-                            try:
-                                ctypes.windll.user32.SetLayeredWindowAttributes(hwnd, 0, 252, 0x2)
-                            except:
-                                pass
-                            time.sleep(1.0)
-                        except:
-                            break
-                
-                # Start background thread to maintain position
-                wallpaper_thread = threading.Thread(target=keep_wallpaper, daemon=True)
-                wallpaper_thread.start()
+                print("Window configured as wallpaper - no periodic refresh needed")
                 
             except Exception as e:
                 print(f"Error configuring window: {e}")
