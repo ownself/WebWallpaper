@@ -243,24 +243,127 @@ class StableHTTPServer:
             self.httpd.shutdown()
             self.httpd.server_close()
 
-# Get screen dimensions
-def get_screen_size():
+# Get monitor information
+def get_monitor_info(monitor_index=0):
+    """Get information about a specific monitor"""
     try:
+        monitors = []
+        
+        def enum_proc(hmonitor, hdc, rect, lparam):
+            # Extract RECT values properly
+            left = rect.contents.left
+            top = rect.contents.top
+            right = rect.contents.right
+            bottom = rect.contents.bottom
+            
+            # Get monitor work area (excludes taskbar and other system areas)
+            # Define MONITORINFO structure manually
+            class MONITORINFO(ctypes.Structure):
+                _fields_ = [
+                    ('cbSize', ctypes.wintypes.DWORD),
+                    ('rcMonitor', ctypes.wintypes.RECT),
+                    ('rcWork', ctypes.wintypes.RECT),
+                    ('dwFlags', ctypes.wintypes.DWORD)
+                ]
+            
+            monitor_info_struct = MONITORINFO()
+            monitor_info_struct.cbSize = ctypes.sizeof(MONITORINFO)
+            
+            if ctypes.windll.user32.GetMonitorInfoW(hmonitor, ctypes.byref(monitor_info_struct)):
+                # Use work area instead of full monitor area
+                work_left = monitor_info_struct.rcWork.left
+                work_top = monitor_info_struct.rcWork.top
+                work_right = monitor_info_struct.rcWork.right
+                work_bottom = monitor_info_struct.rcWork.bottom
+            else:
+                # Fallback to full monitor area
+                work_left = left
+                work_top = top
+                work_right = right
+                work_bottom = bottom
+            
+            monitor_info = {
+                'handle': hmonitor,
+                'left': work_left,
+                'top': work_top, 
+                'right': work_right,
+                'bottom': work_bottom,
+                'width': work_right - work_left,
+                'height': work_bottom - work_top,
+                'full_left': left,
+                'full_top': top,
+                'full_width': right - left,
+                'full_height': bottom - top
+            }
+            monitors.append(monitor_info)
+            return True
+        
+        # Define callback function type
+        import ctypes.wintypes
+        MonitorEnumProc = ctypes.WINFUNCTYPE(
+            ctypes.wintypes.BOOL,
+            ctypes.wintypes.HMONITOR,
+            ctypes.wintypes.HDC,
+            ctypes.POINTER(ctypes.wintypes.RECT),
+            ctypes.wintypes.LPARAM
+        )
+        
+        # Enumerate all monitors
+        user32 = ctypes.windll.user32
+        user32.EnumDisplayMonitors(None, None, MonitorEnumProc(enum_proc), 0)
+        
+        print(f"Found {len(monitors)} monitor(s)")
+        for i, monitor in enumerate(monitors):
+            print(f"Monitor {i}: Work area {monitor['width']}x{monitor['height']} at ({monitor['left']}, {monitor['top']})")
+            print(f"         Full area {monitor['full_width']}x{monitor['full_height']} at ({monitor['full_left']}, {monitor['full_top']})")
+        
+        # Return requested monitor or primary if index is out of range
+        if 0 <= monitor_index < len(monitors):
+            return monitors[monitor_index]
+        else:
+            print(f"Monitor index {monitor_index} not found, using primary monitor (0)")
+            return monitors[0] if monitors else None
+            
+    except Exception as e:
+        print(f"Error getting monitor info: {e}")
+        # Fallback to primary monitor info
         user32 = ctypes.windll.user32
         width = user32.GetSystemMetrics(0)
         height = user32.GetSystemMetrics(1)
-        return width, height
-    except:
-        import tkinter
-        root = tkinter.Tk()
-        width = root.winfo_screenwidth()
-        height = root.winfo_screenheight()
-        root.destroy()
-        return width, height
+        return {
+            'handle': None,
+            'left': 0,
+            'top': 0,
+            'right': width,
+            'bottom': height,
+            'width': width,
+            'height': height
+        }
+
+# Get screen dimensions
+def get_screen_size(monitor_index=0):
+    """Get screen dimensions for a specific monitor"""
+    monitor_info = get_monitor_info(monitor_index)
+    if monitor_info:
+        return monitor_info['width'], monitor_info['height']
+    else:
+        # Fallback to primary screen
+        try:
+            user32 = ctypes.windll.user32
+            width = user32.GetSystemMetrics(0)
+            height = user32.GetSystemMetrics(1)
+            return width, height
+        except:
+            import tkinter
+            root = tkinter.Tk()
+            width = root.winfo_screenwidth()
+            height = root.winfo_screenheight()
+            root.destroy()
+            return width, height
 
 # Window create event handler
-def on_window_create(window):
-    print("Window created, starting background setup")
+def on_window_create(window, monitor_index=0):
+    print(f"Window created, starting background setup for monitor {monitor_index}")
     
     # Start a thread to handle window setup after a delay
     def setup_window():
@@ -277,9 +380,17 @@ def on_window_create(window):
         if hwnd:
             print(f"Found window handle: {hwnd}")
             
-            # Get screen dimensions
-            width, height = get_screen_size()
-            print(f"Screen size: {width}x{height}")
+            # Get monitor information
+            monitor_info = get_monitor_info(monitor_index)
+            if monitor_info:
+                x, y = monitor_info['left'], monitor_info['top']
+                width, height = monitor_info['width'], monitor_info['height']
+                print(f"Monitor {monitor_index} size: {width}x{height} at ({x}, {y})")
+            else:
+                # Fallback to primary screen
+                width, height = get_screen_size(0)
+                x, y = 0, 0
+                print(f"Fallback to primary screen: {width}x{height} at ({x}, {y})")
             
             # Set window styles to make it behave like a wallpaper
             try:
@@ -308,11 +419,26 @@ def on_window_create(window):
                 except Exception as layer_err:
                     print(f"Warning: Could not set layered window attributes: {layer_err}")
                 
-                # Position window to cover entire screen
-                win32gui.SetWindowPos(hwnd, win32con.HWND_BOTTOM, 0, 0, width, height,
+                # Position window to cover the work area of the specified monitor
+                # Use HWND_BOTTOM to place it at the bottom of Z-order, below all normal windows
+                win32gui.SetWindowPos(hwnd, win32con.HWND_BOTTOM, x, y, width, height,
                                      win32con.SWP_NOACTIVATE | win32con.SWP_SHOWWINDOW)
                 
-                print("Window configured as wallpaper - no periodic refresh needed")
+                # Additional step: send the window behind the desktop to ensure it stays as background
+                try:
+                    # Find the desktop window
+                    desktop_hwnd = win32gui.FindWindow("Progman", "Program Manager")
+                    if desktop_hwnd:
+                        # Place our window right after the desktop window in Z-order
+                        win32gui.SetWindowPos(hwnd, desktop_hwnd, 0, 0, 0, 0,
+                                            win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
+                except Exception as z_order_err:
+                    print(f"Warning: Could not set proper Z-order: {z_order_err}")
+                    # Fallback: just ensure it's at the bottom
+                    win32gui.SetWindowPos(hwnd, win32con.HWND_BOTTOM, 0, 0, 0, 0,
+                                        win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
+                
+                print(f"Window configured as wallpaper on monitor {monitor_index}")
                 
             except Exception as e:
                 print(f"Error configuring window: {e}")
@@ -330,10 +456,12 @@ def main():
     parser = argparse.ArgumentParser(description='WebPaper - A web-based wallpaper tool for Windows')
     parser.add_argument('url_or_path', nargs='?', default="http://localhost:8080", help='URL or file path to load')
     parser.add_argument('--clear-cache', action='store_true', help='Clear browser cache before loading')
+    parser.add_argument('--monitor', type=int, default=0, help='Monitor index to display on (default: 0 for primary monitor)')
     args = parser.parse_args()
     
     url_or_path = args.url_or_path
     clear_cache = args.clear_cache
+    monitor_index = args.monitor
 
     # Check if it's a local file path or URL
     if os.path.exists(url_or_path):
@@ -355,8 +483,9 @@ def main():
         uri = url_or_path
 
     print(f"Loading: {uri}")
+    print(f"Target monitor: {monitor_index}")
     
-    width, height = get_screen_size()
+    width, height = get_screen_size(monitor_index)
     
     # Start system tray in a separate thread
     tray_thread = threading.Thread(target=create_system_tray, daemon=True)
@@ -384,8 +513,8 @@ def main():
             print("Cache clearing not supported in this version of pywebview")
     
     try:
-        # Start webview in main thread (this will block until window is closed)
-        webview.start(on_window_create, webview_window, gui='edgechromium')
+        # Start webview in main thread (this will block until window is closed)  
+        webview.start(lambda window: on_window_create(window, monitor_index), webview_window, gui='edgechromium')
     except KeyboardInterrupt:
         print("\nReceived Ctrl+C, shutting down...")
     finally:
