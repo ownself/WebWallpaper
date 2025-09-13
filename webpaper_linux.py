@@ -2,11 +2,13 @@ import gi
 import os
 import sys
 import threading
-import http.server
-import socketserver
-import webbrowser
 import argparse
+import mimetypes
 from urllib.parse import urlparse
+from werkzeug.wrappers import Request, Response
+from werkzeug.serving import make_server
+from werkzeug.middleware.shared_data import SharedDataMiddleware
+from werkzeug.utils import secure_filename
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("WebKit2", "4.1")  # 更新到4.1版本
@@ -15,41 +17,110 @@ gi.require_version("GtkLayerShell", "0.1")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gtk, WebKit2, GtkLayerShell, Gdk
 
-# 简单的HTTP服务器类
-class SimpleHTTPServer:
+# 基于Werkzeug的HTTP服务器类
+class WerkzeugHTTPServer:
     def __init__(self, directory, port=8080):
-        self.directory = directory
+        self.directory = os.path.abspath(directory)
         self.port = port
-        self.httpd = None
+        self.server = None
         self.server_thread = None
+        self.is_running = False
+        self.app = None
         
+        # 验证目录是否存在
+        if not os.path.exists(self.directory) or not os.path.isdir(self.directory):
+            raise ValueError(f"Directory does not exist: {self.directory}")
+        
+    def _create_app(self):
+        """创建WSGI应用"""
+        def serve_static_file(environ, start_response):
+            # 获取请求路径
+            path = environ.get('PATH_INFO', '').lstrip('/')
+            # 安全化文件名
+            path = secure_filename(path) if path else 'index.html'
+            
+            # 构建文件路径
+            if path:
+                file_path = os.path.join(self.directory, path)
+            else:
+                file_path = os.path.join(self.directory, 'index.html')
+                
+            # 检查文件是否存在且在指定目录内
+            if (os.path.exists(file_path) and 
+                os.path.isfile(file_path) and 
+                os.path.commonpath([self.directory, file_path]) == self.directory):
+                
+                # 确定内容类型
+                content_type, _ = mimetypes.guess_type(file_path)
+                if content_type is None:
+                    content_type = 'application/octet-stream'
+                
+                # 读取文件内容
+                try:
+                    with open(file_path, 'rb') as f:
+                        content = f.read()
+                    
+                    # 创建响应
+                    response = Response(
+                        response=content,
+                        status=200,
+                        content_type=content_type
+                    )
+                    
+                    # 添加缓存控制头部
+                    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+                    response.headers['Pragma'] = 'no-cache'
+                    response.headers['Expires'] = '0'
+                    
+                    # 添加安全头部
+                    response.headers['X-Content-Type-Options'] = 'nosniff'
+                    response.headers['X-Frame-Options'] = 'DENY'
+                    
+                    return response(environ, start_response)
+                except Exception as e:
+                    print(f"Error reading file {file_path}: {e}")
+            else:
+                # 文件未找到
+                response = Response(
+                    response=b"File not found",
+                    status=404,
+                    content_type="text/plain"
+                )
+                return response(environ, start_response)
+        
+        return serve_static_file
+    
     def start(self):
-        # 切换到指定目录
-        os.chdir(self.directory)
-        
-        # 创建HTTP请求处理器，禁用缓存
-        class NoCacheHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
-            def end_headers(self):
-                # 添加禁用缓存的头部
-                self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
-                self.send_header('Pragma', 'no-cache')
-                self.send_header('Expires', '0')
-                super().end_headers()
-        
-        # 创建socket服务器
-        self.httpd = socketserver.TCPServer(("", self.port), NoCacheHTTPRequestHandler)
-        
-        # 在新线程中启动服务器
-        self.server_thread = threading.Thread(target=self.httpd.serve_forever)
-        self.server_thread.daemon = True
-        self.server_thread.start()
-        
-        print(f"Local server started at http://localhost:{self.port}")
-        
+        """启动HTTP服务器"""
+        try:
+            # 创建WSGI应用
+            self.app = self._create_app()
+            
+            # 创建Werkzeug服务器
+            self.server = make_server('localhost', self.port, self.app, threaded=True)
+            self.server.host = 'localhost'  # 明确设置主机名
+            
+            # 在新线程中启动服务器
+            self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+            self.server_thread.start()
+            self.is_running = True
+            
+            print(f"Werkzeug server started at http://localhost:{self.port}")
+            print(f"Serving directory: {self.directory}")
+            
+        except Exception as e:
+            print(f"Failed to start Werkzeug server: {e}")
+            raise
+    
     def stop(self):
-        if self.httpd:
-            self.httpd.shutdown()
-            self.httpd.server_close()
+        """停止HTTP服务器"""
+        if self.is_running and self.server:
+            try:
+                self.server.shutdown()
+                self.is_running = False
+                print("Werkzeug server stopped")
+            except Exception as e:
+                print(f"Error stopping server: {e}")
 
 # 创建WebView
 view = WebKit2.WebView()
@@ -78,14 +149,14 @@ if os.path.exists(url_or_path):
         filename = ""
     
     # 启动本地服务器
-    server = SimpleHTTPServer(directory)
+    server = WerkzeugHTTPServer(directory)
     server.start()
     
     # 构造URL
     if filename:
-        uri = f"http://localhost:8080/{filename}"
+        uri = f"http://localhost:{server.port}/{filename}"
     else:
-        uri = f"http://localhost:8080/"
+        uri = f"http://localhost:{server.port}/"
 else:
     # 是URL，直接使用
     uri = url_or_path
