@@ -1,6 +1,6 @@
 # WebPaper
 
-将网页设置为桌面壁纸的工具。
+这是个写来自用的小工具，可以将网页设置为桌面壁纸，在Arch Linux + Hyprland环境下测试通过，允许使用[Rain](https://github.com/rocksdanister/rain)这样的基于Web的动态壁纸（原Windows平台的Lively Wallpaper）
 
 ## 功能
 
