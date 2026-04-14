@@ -188,31 +188,34 @@ fn validate_and_resolve_path(root_dir: &Path, requested_path: &str) -> io::Resul
     Ok(canonical)
 }
 
-/// Simple URL decoding (handles common cases)
+/// URL decoding that correctly handles multi-byte UTF-8 sequences.
+///
+/// The previous implementation pushed each decoded byte directly as a `char`,
+/// which corrupted multi-byte characters (e.g. Chinese, emoji). This version
+/// collects raw bytes first and converts to UTF-8 at the end.
 fn urlencoding_decode(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
+    let bytes = s.as_bytes();
+    let mut result: Vec<u8> = Vec::with_capacity(s.len());
+    let mut i = 0;
 
-    while let Some(c) = chars.next() {
-        if c == '%' {
-            // Try to parse hex escape
-            let hex: String = chars.by_ref().take(2).collect();
-            if hex.len() == 2 {
-                if let Ok(byte) = u8::from_str_radix(&hex, 16) {
-                    result.push(byte as char);
-                    continue;
-                }
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            // SAFETY: we just checked bounds above
+            if let Ok(byte) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                result.push(byte);
+                i += 3;
+                continue;
             }
-            result.push('%');
-            result.push_str(&hex);
-        } else if c == '+' {
-            result.push(' ');
-        } else {
-            result.push(c);
+        } else if bytes[i] == b'+' {
+            result.push(b' ');
+            i += 1;
+            continue;
         }
+        result.push(bytes[i]);
+        i += 1;
     }
 
-    result
+    String::from_utf8_lossy(&result).into_owned()
 }
 
 /// Serve a file with appropriate content type
@@ -306,6 +309,14 @@ mod tests {
         assert_eq!(urlencoding_decode("hello%20world"), "hello world");
         assert_eq!(urlencoding_decode("file%2Fpath"), "file/path");
         assert_eq!(urlencoding_decode("normal"), "normal");
+        // Multi-byte UTF-8: '爱' = %E7%88%B1
+        assert_eq!(urlencoding_decode("%E7%88%B1"), "爱");
+        // Chinese filename fragment
+        assert_eq!(urlencoding_decode("%E4%B8%AD%E6%96%87"), "中文");
+        // Emoji: '💗' = %F0%9F%92%97
+        assert_eq!(urlencoding_decode("%F0%9F%92%97"), "💗");
+        // Mixed ASCII and multi-byte
+        assert_eq!(urlencoding_decode("hello%20%E4%B8%96%E7%95%8C"), "hello 世界");
     }
 
     #[test]
