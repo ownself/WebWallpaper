@@ -55,14 +55,18 @@ impl LocalServer {
 
         let handle = thread::spawn(move || {
             for request in server.incoming_requests() {
-                // Check if we should shutdown
                 if shutdown.load(Ordering::Relaxed) {
                     break;
                 }
-
-                // Handle the request
-                let response = handle_request(&root_dir, &request);
-                let _ = request.respond(response);
+                let root = root_dir.clone();
+                let sd = shutdown.clone();
+                thread::spawn(move || {
+                    if sd.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let response = handle_request(&root, &request);
+                    let _ = request.respond(response);
+                });
             }
         });
 
